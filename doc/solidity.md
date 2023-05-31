@@ -1032,3 +1032,654 @@ contract E is X, Y {
     constructor() Y("Y was called") X("X was called") {}
 }
 ```
+
+## 继承 inheritance
+
+solidity 支持多继承，合约通过使用 is 关键字继承其他合约  
+可能会被子合约重写的函数，要声明称 virtual  
+子合约中重写父合约的函数必须使用 override 关键字  
+继承的顺序很重要，要从最基础的到最衍生的顺序列出继承的父合约列表
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+/* 继承图
+    A
+   / \
+  B   C
+ / \ /
+F  D,E
+ */
+
+contract A {
+    function foo() public pure virtual returns(string memory){
+        return "A";
+    }
+}
+
+// 使用is关键字继承其他合约
+contract B is A{
+    // 重写A的foo函数
+    function foo() public pure virtual override returns(string memory) {
+        return "B";
+    }
+}
+
+contract C is A {
+    //重写A.foo()
+    function foo() public pure virtual override returns(string memory) {
+        return "C";
+    }
+}
+
+// 合约可以继承自多个父合约
+// 当要调用的函数在多个父合约中都定义过，父合约的搜索方式按照从右向左，深度优先的方式
+contract D is B, C {
+    // D.foo() 返回"C"
+    // 因为C是最右边且饱含foo的父合约
+    function foo() public pure virtual override(B, C) returns(string memory) {
+        return super.foo();
+    }
+}
+
+contract E is C, B {
+    // E.foo() 返回"B"
+    // 因为B是最右边且饱含foo的父合约
+    function foo() public pure virtual override(C, B) returns(string memory) {
+        return super.foo();
+    }
+}
+
+// 继承顺序一定要是最基类到最衍生的顺序
+// 交换AB的顺序会抛出编译错误
+contract F is A, B {
+    function foo() public pure virtual override(A, B) returns(string memory) {
+        return super.foo();
+    }
+}
+
+```
+
+## 隐藏继承的状态变量
+
+不像函数，状态变量不能通过重新在子类中声明同名状态变量复写  
+下例展示如何在子类中重写父类的状态变量
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+contract A {
+    string public name = "Contract A";
+    function getName() public view returns(string memory) {
+        return name;
+    }
+}
+
+contract C is A {
+    // 正确的重写继承环境变量的方式
+    constructor() {
+        name = "Contract C";
+    }
+
+    // C.getName() 会返回"Contract C"
+}
+```
+
+## 调用父合约
+
+父合约可以被直接调用，也可以使用 super 关键字  
+使用 super 关键字，所有的直接父合约都会被调用
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+/* 继承树
+   A
+ /  \
+B   C
+ \ /
+  D
+*/
+
+contract A {
+    // 这里定义一个事件，可以在函数中触发事件，触发的事件会在交易log中记录log，对跟踪函数调用有帮助
+    event Log(string message);
+
+    function foo() public virtual {
+        emit Log("A.foo called");
+    }
+
+    function bar() public virtual {
+        emit Log("A.bar called");
+    }
+}
+
+contract B is A{
+    function foo() public virtual override {
+        emit Log("B.foo called");
+        A.foo();
+    }
+
+    function bar() public virtual override {
+        emit Log("B.bar called");
+        super.bar();
+    }
+}
+
+contract C is A {
+    function foo() public virtual override {
+        emit Log("C.foo called");
+        A.foo();
+    }
+
+    function bar() public virtual override {
+        emit Log("C.bar called");
+        super.bar();
+    }
+}
+
+contract D is B, C {
+    // D.foo只会调用C和A的foo
+    function foo() public virtual override(B, C) {
+        super.foo();
+    }
+
+    // D.bar()会调用 C->B->A的bar
+    function bar() public virtual override(B, C) {
+        super.bar();
+    }
+}
+
+```
+
+## 可视性 visibility
+
+函数和状态变量要声明它们是否可以被其他合约访问  
+函数可以被声明成
+
+- public 任何合约和账户都可以访问调用
+- private 只在声明函数的合约内部可访问
+- internal 只在继承内部函数的合约内部可以访问（相对于 private，多了继承子合约）
+- external 只有其他合约和账户可以访问
+
+状态变量可以是 public/private/internal 但不能是 external
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+contract Base {
+    // private函数只能在这个合约内部调用，不能在继承这个合约的合约内调用
+    function privateFun() private pure returns(string memory) {
+        return "private function called";
+    }
+
+    function testPrivateFunc() public pure returns(string memory) {
+        return privateFun();
+    }
+
+    // internal函数可以在这个函数内部和继承了这个合约的合约内部访问
+    function internalFun() internal pure returns(string memory) {
+        return "internal function called";
+    }
+
+    function testInternalFunc() public pure virtual returns(string memory) {
+        return internalFun();
+    }
+
+    // public函数可以被这个合约/继承了这个合约的合约/其他合约和账户访问
+    function publicFun() public pure returns(string memory) {
+        return "public function called";
+    }
+
+    // external函数只能被其他合约和账户访问
+    function externalFun() external pure returns(string memory) {
+        return "external function called";
+    }
+
+    // 这个函数不会被编译，external函数不能在这个合约内部调用
+    // function testExternalFun() public pure returns(string memory) {
+    //     return externalFun();
+    // }
+
+    // 状态变量
+    string public publicVar = "public var";
+    string private privateVar = "private var";
+    string internal internalVar = "internal var";
+    //不能声明external状态变量
+    //string external externalVar = "external var";
+
+}
+
+contract Child is Base {
+    // 不能访问父类的private函数和状态变量
+    // function testPrivateFunc() public pure returns(string memory) {
+    //     return privateFun();
+    // }
+
+    // 可以访问父类的internal函数和状态变量
+    function testInternalFunc() public pure virtual override returns(string memory) {
+        return internalFun();
+    }
+}
+```
+
+## 接口 interface
+
+你可以声明接口和其他合约交互  
+接口
+
+- 不能有函数实现
+- 可以继承自其他接口
+- 所有声明的函数都必须是 external
+- 不能声明构造函数 constructor
+- 不能声明状态变量
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+contract Counter {
+    uint public count;
+
+    function increment() external {
+        count += 1;
+    }
+}
+
+interface ICounter {
+    function count() external view returns(uint);
+    function increment() external;
+}
+
+contract MyContract {
+
+    //通过传入实现了接口的合约地址，调用接口函数
+    function incrementCounter(address _counter) external {
+        ICounter(_counter).increment();
+    }
+
+    function getCount(address _counter) external view returns(uint) {
+        return ICounter(_counter).count();
+    }
+}
+
+// Uniswap 例子
+interface UniswapV2Factory {
+    function getPair(address tokenA, address tokenB) external view returns (address pair);
+}
+
+interface UniswapV2Pair {
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+}
+
+contract UniswapExample {
+    address private factory = 0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f;
+    address private dai = 0x6B175474E89094C44Da98b954EedeAC495271d0F;
+    address private weth = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+
+    function getTokenReserves() external view returns (uint, uint) {
+        address pair = UniswapV2Factory(factory).getPair(dai, weth);
+        (uint reserve0, uint reserve1, ) = UniswapV2Pair(pair).getReserves();
+        return (reserve0, reserve1);
+    }
+}
+
+```
+
+## 可支付 payable
+
+函数或者地址声明成 payable，可以接收 ether 到合约
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+contract Payable {
+    // payable的地址可以接收ether
+    address payable public owner;
+
+    // payable的构造函数可以接收ether
+    constructor() payable {
+        owner = payable(msg.sender);
+    }
+
+    // 向合约里存钱的函数, 调用这个函数的时候带一些ether，这个合约账户的余额会自动增加
+    function deposite() public payable {
+
+    }
+
+    // 如果带一些ether调用这个函数，会抛错，因为这个函数不是payable
+    function notPayable() public {}
+
+    // 从当前合约取走所有余额
+    function withdraw() public {
+        //获取合约账户的余额
+        uint amount = address(this).balance;
+
+        // 发送所有的ether到owner，因为owner的地址是payable的，所以owner可以收到ether
+        (bool success,) = owner.call{value: amount}("");
+        require(success, "Fail to send Ether");
+    }
+
+    // 转移指定余额到指定账户
+    function transfer(address payable _to, uint amount) public {
+        // _to被声明成payable
+        (bool success,) = _to.call{value: amount}("");
+        require(success, "Fail to send Ether");
+    }
+}
+```
+
+## 发送 Ether(transfer,send,call)
+
+**如何发送 Ether**  
+你可以向其他账户发送 Ether,通过以下方法：
+
+- transfer (2300gas, 发送失败抛出错误)
+- send (2300gas, 返回 bool)
+- call (发送所有的 gas 或设置的 gas，返回 bool)  
+  **如何接收 Ether**  
+  一个要接收 Ether 的合约，至少要有一个以下函数：
+- receive() external payable
+- fallback() external payable  
+  当 msg.data 为空时，调用 receive()，否则调用 fallback()  
+  **应该使用哪个函数发送 Ether**  
+  call 中集成了防止重入攻击，自 2019 年 12 月后推荐使用该方法  
+  防重入攻击，通过：
+- 在调用其他合约前修改状态
+- 使用防重入攻击的 modifier
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+contract ReceiveEther {
+    /*
+    调用哪个函数, fallback() or receive()?
+
+           发送 Ether
+               |
+         msg.data 是空?
+              / \
+            yes  no
+            /     \
+receive() 存在?  fallback()
+         /   \
+        yes   no
+        /      \
+    receive()   fallback()
+    */
+
+    // 接收ether的函数，msg.data必须为空
+    receive() external payable {}
+
+    // 当msg.data不为空时调用fallback
+    fallback() external payable {}
+
+    function getBalance() public view returns(uint) {
+        return address(this).balance;
+    }
+}
+
+contract SendEther {
+    function sendViaTransfer(address payable _to) public payable {
+        // transfer函数已经不再推荐使用
+        _to.transfer(msg.value);
+    }
+
+    function sendViaSend(address payable _to) public payable {
+        // send 返回bool表示转账成功和失败
+        // 这个韩式也已经不再推荐使用
+        bool sent = _to.send(msg.value);
+        require(sent, "Fail to send");
+    }
+
+    function sendViaCall(address payable _to) public payable {
+        // call 返回bool值指示转账成功或失败
+        // 目前推荐使用的方法
+        (bool success, bytes memory data) = _to.call{value: msg.value}("");
+        require(success, "Fail to send");
+    }
+}
+```
+
+## fallback 函数
+
+fallback 是一个特殊的函数，它在以下场景执行：
+
+- 被调用的函数不存在
+- Ether 直接发送到合约账户并且合约中没有 receive()，或者 msg.data 不为空
+
+当被 transfer, send 调用时，fallback 有 2300 的 gas 限制
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+contract Fallback {
+    event Log(string func, uint gas);
+
+    // fallback一定要声明称external
+    fallback() external payable {
+        // transfer/send (发送2300gas到这个fallback函数)
+        // call (发送所有gas费)
+        emit Log("fallback", gasleft());
+    }
+
+    // receive() 是fallback的变形，当msg.data为空时调用
+    receive() external payable {
+        emit Log("receive", gasleft());
+    }
+
+    function getBalance() public view returns(uint) {
+        return address(this).balance;
+    }
+
+}
+
+contract SendToFallback {
+    function transferToFallback(address payable _to) public payable {
+        _to.transfer(msg.value);
+    }
+
+    function callFallback(address payable _to) public payable {
+        (bool success,) = _to.call{value: msg.value}("");
+        require(success, "Fail to send");
+    }
+}
+```
+
+fallback 可以携带 bytes 作为输入输出
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+contract FallbackInputOutput {
+    address public immutable target;
+    constructor(address _target) {
+        target = _target;
+    }
+
+    fallback(bytes calldata data) external payable returns(bytes memory) {
+        (bool success, bytes memory res) = target.call{value: msg.value}(data);
+        require(success, "Fail to send");
+        return res;
+    }
+}
+
+contract TestFallbackInputOutput {
+    event Log(bytes res);
+
+    function test(address _fallback, bytes calldata data) external {
+        (bool ok, bytes memory res) = _fallback.call(data);
+        require(ok, "call failed");
+        emit Log(res);
+    }
+}
+```
+
+## Call 函数
+
+call 是和其他合约交互的底层函数  
+是当发送 Ether 给其他合约时推荐使用的函数  
+但是不推荐使用 call 调用已经存在的函数  
+**不推荐使用 call 调用已存在函数的几点原因**
+
+- 回滚不会向上传递提示
+- 绕过类型检查
+- 函数存在性检查被忽略
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+contract Receiver {
+    event Received(address caller, uint amount, string message);
+
+    fallback() external payable {
+        emit Received(msg.sender, msg.value, "Fallback called");
+    }
+
+    function foo(string memory _text, uint _x) public payable returns(uint) {
+        emit Received(msg.sender, msg.value, _text);
+        return _x + 1;
+    }
+}
+
+contract Caller {
+    event Response(bool success, bytes data);
+
+    // 合约的调用者不知道合约接收者的源码，但是知道合约接收者的地址和要调用的函数
+    function testCallFoo(address payable _addr) public payable {
+        //可以在发送ether时传入自定义gas量
+        (bool success, bytes memory data) = _addr.call{value: msg.value, gas:5000}(abi.encodeWithSignature("foo(string,uint256)", "call foo", 123));
+
+        emit Response(success, data);
+    }
+
+    // 调用不存在的函数，触发fallback
+    function testCallNotExit(address payable _addr) public payable {
+        (bool success, bytes memory data) = _addr.call{value: msg.value}(abi.encodeWithSignature("doesntExit()"));
+
+        emit Response(success, data);
+    }
+}
+```
+
+## Delegatecall
+
+delegatecall 是和 call 相似的底层函数  
+当合约 A 对合约 B 调用 delegatecall，B 的代码会使用 A 的存储,msg.sender 和 msg.value 运行
+
+```solidity
+ // SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+// 先部署该合约
+contract B {
+    // 该合约的存储布局要和A一样
+    uint public num;
+    address public sender;
+    uint public value;
+
+    function setVars(uint _num) public payable {
+        num = _num;
+        sender = msg.sender;
+        value = msg.value;
+    }
+}
+
+contract A {
+    uint public num;
+    address public sender;
+    uint public value;
+
+    function setVars(address _contract, uint num) public payable {
+        // A的存储被修改，B的未被修改
+        (bool success, bytes memory data) = _contract.delegatecall(abi.encodeWithSignature("setVars(uint256)", num));
+    }
+}
+```
+
+## 函数选择器 function selector
+
+当一个函数被调用时，calldata 的前四个 bytes 决定是哪个函数被调用  
+这 4 bytes 就是函数选择器  
+如下例，在一个合约中使用 call 去执行地址 addr 的 transfer 函数
+
+```solidity
+addr.call(abi.encodeWithSignature("transfer(address, uint256)", 0x一些地址, 123));
+```
+
+abi.encodeWithSignature(...)返回的前四个 bytes 就是函数选择器
+
+函数选择器如何运算的例子：
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+contract FunctionSelector {
+    function getSelector(string calldata _func) external pure returns(bytes4) {
+        return bytes4(keccak256(bytes(_func)));
+    }
+}
+```
+
+## 调用其他合约
+
+有两种方式调用其他合约, 最简单的就是直接调用，比如 A.foo(x, y, z); 另一种方式就是使用 call（不推荐）
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+contract Callee {
+    uint public x;
+    uint public value;
+
+    function setX(uint _x) public returns(uint) {
+        x = _x;
+        return x;
+    }
+
+    function setXAndEther(uint _x) public payable returns(uint, uint) {
+        x = _x;
+        value = msg.value;
+        return (x, value);
+    }
+}
+
+contract Caller {
+    function setX(Callee _callee, uint _x) public{
+        uint x = _callee.setX(_x);
+    }
+
+    function setXFromAddress(address _addr, uint _x) public {
+        Callee callee = Callee(_addr);
+        callee.setX(_x);
+    }
+
+    function setXAndEther(Callee callee, uint _x) public payable{
+        (uint x, uint v) = callee.setXAndEther{value:msg.value}(_x);
+    }
+}
+```
