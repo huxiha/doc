@@ -758,3 +758,498 @@ contract TestContract {
     }
 }
 ```
+
+## 代理合约
+
+solidity 合约部署到链上之后，是不能进行修改的，如果有 bug 需要修复就需要创建一个新的合约，进行数据迁移的话就需要花费大量的 gas 费用，可以使用代理合约来解决合约 bug 修复和更新的问题。  
+大体思路就是：
+
+- 代理合约指向一个逻辑运行合约，代理合约里存放状态变量，通过 delegatecall 调用逻辑运行合约，逻辑运行合约会执行并修改代理合约的状态变量
+- 当逻辑运行合约有 bug 需要修复更新的时候，重新部署一个新的逻辑合约，并让代理合约重新指向新的逻辑合约即可，原来的数据状态变量也不用迁移，节省 gas
+- 调用者只需要调用代理合约即可
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+contract Proxy {
+    // 存储当前指向的逻辑运行合约
+    address public implementation;
+    uint public count;
+
+
+
+    constructor(address _implementation) {
+        implementation = _implementation;
+    }
+
+    function upgradeTo(address _implementation) external {
+        implementation = _implementation;
+    }
+
+    function _delegate() internal {
+        assembly {
+            // 获取指向的逻辑合约地址，位于storage0位置
+            let _implementation := sload(0)
+
+            // calldatacopy(t, f, s) - 从calldata的f位置，复制s bytes到内存位置t
+            //  calldatasize() - calldata的大小bytes
+            // 复制整个calldata到内存0位置
+            calldatacopy(0, 0, calldatasize())
+
+            // 通过delegatecall调用逻辑合约的方法
+            // delegatecall(g, a, in, insize, out, outsize) -
+            // - 调用地址a的逻辑运行合约（这里是_implementation）
+            // - 输入内存范围[in…(in+insize)) -- 这里是0-calldatasize
+            // - g gas费
+            // - 输出内存范围[out…(out+outsize)) -- 0,0
+            // - 返回0表示有错误(例如gas用光)， 返回1调用成功
+            let result := delegatecall(gas(), _implementation, 0, calldatasize(), 0, 0)
+
+            // 复制返回值.
+            // returndatacopy(t, f, s) - 从f返回值的位置f复制s bytes到内存t位置
+            // returndatasize() - 返回值的大小（bytes）
+            returndatacopy(0, 0, returndatasize())
+
+            switch result
+            // delegatecall 返回0表示有错误.
+            case 0 {
+                // revert(p, s) - 回滚，并返回返回数据
+                revert(0, returndatasize())
+            }
+            default {
+                // return(p, s) - 返回返回数据
+                return(0, returndatasize())
+            }
+        }
+    }
+
+    // fallback(),当调用者调用逻辑运行合约的任意方法时，都跳到fallback捕获
+    fallback() external payable {
+       _delegate();
+    }
+}
+
+contract CounterV1 {
+    // 切记切记，逻辑运行合约的状态变量一定要和代理合约保持一致，不然就会有问题
+    address public implementation;
+    uint public count;
+
+    event Increment(uint count);
+    function inc() external {
+        count += 1;
+        emit Increment(count);
+    }
+}
+
+contract CounterV2 {
+    address public implementation;
+    uint public count;
+
+    function inc() external {
+        count += 1;
+    }
+
+    function dec() external {
+        count -= 1;
+    }
+}
+
+contract Caller{
+    address public proxy; // 代理合约地址
+    constructor(address proxy_){
+        proxy = proxy_;
+    }
+
+    // 通过代理合约调用 inc()函数
+    function inc() external returns(uint) {
+        (bool success,) = proxy.call(abi.encodeWithSignature("inc()"));
+        require(success, "call failed");
+    }
+}
+```
+
+## 部署任意合约
+
+通过合约的二进制编码部署合约
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+contract Proxy {
+    event Deploy(address deployedAddress);
+
+    // 通过合约的bytes code(合约的创建码)部署指定合约
+    function deploy(bytes memory _code) external payable returns(address addr) {
+        assembly {
+            //create(v, p, n)
+            //v = 发送的eth
+            //p = 内存中执行代码开始位置的指针
+            //n = 代码大小
+            addr := create(callvalue(), add(_code, 0x20), mload(_code))
+        }
+        require(addr != address(0), "Invalid address!");
+        emit Deploy(addr);
+
+    }
+
+    // 执行部署完的合约方法
+    function execute(address _addr, bytes memory _data) external payable {
+        (bool success,) = _addr.call{value: msg.value}(_data);
+        require(success, "call failed!");
+    }
+}
+
+contract TestContract1 {
+    address public owner = msg.sender;
+
+    event Log(address owner);
+    function setOwner(address _owner) public {
+        require(msg.sender == owner, "not owner");
+        owner = _owner;
+        emit Log(owner);
+    }
+}
+
+contract TestContract2 {
+    address public owner = msg.sender;
+    uint public value = msg.value;
+    uint public x;
+    uint public y;
+
+    event Log(uint a, uint b);
+
+    constructor(uint _x, uint _y) payable {
+        x = _x;
+        y = _y;
+        emit Log(x, y);
+    }
+}
+
+contract Helper {
+    function getBytecode1() external pure returns (bytes memory) {
+        bytes memory bytecode = type(TestContract1).creationCode;
+        return bytecode;
+    }
+
+    function getBytecode2(uint _x, uint _y) external pure returns (bytes memory) {
+        bytes memory bytecode = type(TestContract2).creationCode;
+        // 有构造函数的合约，需要同时打包构造函数入参
+        return abi.encodePacked(bytecode, abi.encode(_x, _y));
+    }
+
+    function getCalldata(address _owner) external pure returns (bytes memory) {
+        return abi.encodeWithSignature("setOwner(address)", _owner);
+    }
+}
+```
+
+## 变量写入任意一个存储位置
+
+solidity 存储是一个长度为 2^256 的数组，每一个卡槽可以存放 32bytes 的数据  
+状态变量声明的顺序以及状态变量的类型会决定它用哪个卡槽  
+我们可以使用 assembly，将状态变量写进任意一个卡槽
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+library StorageSlot {
+    // 定义一个slot的结构体，描述一个slot,存放值value
+    struct AddressSlot {
+        address value;
+    }
+
+    function getAddressSlot(bytes32 slot) public returns(AddressSlot storage pointer) {
+        assembly {
+            // 返回一个指定的slot给这个结构体
+            pointer.slot := slot
+        }
+    }
+}
+
+contract TestSlot {
+    // 一个solot
+    bytes32 public constant TEST_SLOT = keccak256("TEST_SLOT");
+
+    //  slot里写值
+    function write(address _addr) external {
+        // 设置data的slot为TEST_SLOT
+        StorageSlot.AddressSlot storage data = StorageSlot.getAddressSlot(TEST_SLOT);
+        // 这个slot里放指定地址
+        data.value = _addr;
+    }
+
+    // 获取slot里的值
+    function get() external returns (address) {
+        StorageSlot.AddressSlot storage data = StorageSlot.getAddressSlot(TEST_SLOT);
+        return data.value;
+    }
+}
+```
+
+## 单向支付通道
+
+支付通道允许付收双方在链下多次进行 ether 交易  
+如何使用这个例子的合约：
+
+- A 部署这个合约，并向合约里存入一些 ether
+- A 在链下通过给一条支付 ether 消息签名认证一笔交易，然后把这个签名发送给 B
+- B 可以拿着这个签名给智能合约取出这笔 ether
+- 当合约超时，即使 B 没有取走他的 ether, A 也可以撤回他在合约里存的所有资产  
+  之所以叫单向支付通道，是因为支付流动永远是从 A 到 B
+
+部署以下合约使用 metamask 账户：  
+签名：浏览器中执行分配 account 和 hash(通过 gethash 获取) ethereum.request({ method: "personal_sign", params: [account, hash]}).then(console.log)
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/security/ReentrancyGuard.sol";
+import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/utils/cryptography/ECDSA.sol";
+
+contract UniDirectionPayment is ReentrancyGuard {
+    using ECDSA for bytes32; // 使用ECDSA签名算法
+
+    address payable public sender; // 合约创建者，A
+    address payable public receiver; // 拿签名取钱的B
+
+    uint public expiresAt; // 合约超时
+    uint public constant DURATION = 7 * 24 * 60 *60; // 合约存在时长
+
+    constructor (address _receiver) payable{
+        require(_receiver != address(0), "Invalid address!");
+        sender = payable(msg.sender);
+        receiver = payable(_receiver);
+        expiresAt = block.timestamp + DURATION;
+    }
+
+    // 获取消息哈希
+    function _getHash(uint _amount) private view returns (bytes32) {
+        return keccak256(abi.encodePacked(address(this), _amount));
+    }
+    // 对外可见
+    function getHash(uint _amount) public view returns (bytes32) {
+        return _getHash(_amount);
+    }
+
+    // 获取消息哈希的签名
+    function _getEthSignedHash(uint _amount) private view returns(bytes32) {
+        return _getHash(_amount).toEthSignedMessageHash();
+    }
+
+    // 对外可见
+    function getEthSignedHash(uint _amount) public view returns(bytes32) {
+        return _getEthSignedHash(_amount);
+    }
+
+    // 验证签名
+    function _verify(uint _amount, bytes memory _sig) private view returns(bool, address) {
+        return (_getEthSignedHash(_amount).recover(_sig) == sender, _getEthSignedHash(_amount).recover(_sig));
+    }
+
+
+    // 对外可见
+    function verify(uint _amount, bytes memory _sig) public view returns(bool, address) {
+        return _verify(_amount, _sig);
+    }
+
+    // B可以调用这个方法取ETH
+    function close(uint _amount, bytes memory _sig) external nonReentrant {
+        // 发送者要是receiver
+        require(msg.sender == receiver, "Not receiver");
+        // 签名验证要通过
+        (bool verified,) = _verify(_amount, _sig);
+        require(verified, "Invalid sig");
+        // 还没有超时
+        require(block.timestamp < expiresAt, "expired");
+
+        (bool success,) = receiver.call{value: _amount}("");
+        require(success, "Send fail");
+    }
+
+}
+
+```
+
+## 双向支付通道
+
+双向支付通道，允许 A 和 B 转移 ether  
+支付可以从 A 到 B，也可以从 B 到 A  
+和单向支付差不多，多一个签名认证
+
+## 英式拍卖
+
+英式拍卖 NFT
+
+**拍卖规则**
+
+1. NFT 出售者部署合约
+2. 拍卖持续 7 天
+3. 拍卖参与者通过向合约存入大于当前最高价的 ETH 来竞标
+4. 所有参与者都可以收回自己的出价（出价不是当前最高的时候可以）
+
+**拍卖结束**
+
+1. 最高出价者称为 NFT 新的拥有者
+2. 出售者可以收到最高出价的 ETH
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
+
+interface IERC721 {
+    function safeTransferFrom(address from, address to, uint tokenId) external;
+
+    function transferFrom(address, address, uint) external;
+}
+
+contract EnglishAuction {
+    event Start();
+    event Bid(address indexed sender, uint amount);
+    event Withdraw(address indexed bidder, uint amount);
+    event End(address winner, uint amount);
+
+    IERC721 public nft;
+    uint public nftId;
+
+    address payable public seller;
+    uint public endAt;
+    bool public started;
+    bool public ended;
+
+    address public highestBidder;
+    uint public highestBid;
+    mapping(address => uint) public bids;
+
+    constructor(address _nft, uint _nftId, uint _startingBid) {
+        nft = IERC721(_nft);
+        nftId = _nftId;
+
+        seller = payable(msg.sender);
+        highestBid = _startingBid;
+    }
+
+    function start() external {
+        require(!started, "started");
+        require(msg.sender == seller, "not seller");
+
+        nft.transferFrom(msg.sender, address(this), nftId);
+        started = true;
+        endAt = block.timestamp + 7 days;
+
+        emit Start();
+    }
+
+    function bid() external payable {
+        require(started, "not started");
+        require(block.timestamp < endAt, "ended");
+        require(msg.value > highestBid, "value < highest");
+
+        if (highestBidder != address(0)) {
+            bids[highestBidder] += highestBid;
+        }
+
+        highestBidder = msg.sender;
+        highestBid = msg.value;
+
+        emit Bid(msg.sender, msg.value);
+    }
+
+    function withdraw() external {
+        uint bal = bids[msg.sender];
+        bids[msg.sender] = 0;
+        payable(msg.sender).transfer(bal);
+
+        emit Withdraw(msg.sender, bal);
+    }
+
+    function end() external {
+        require(started, "not started");
+        require(block.timestamp >= endAt, "not ended");
+        require(!ended, "ended");
+
+        ended = true;
+        if (highestBidder != address(0)) {
+            nft.safeTransferFrom(address(this), highestBidder, nftId);
+            seller.transfer(highestBid);
+        } else {
+            nft.safeTransferFrom(address(this), seller, nftId);
+        }
+
+        emit End(highestBidder, highestBid);
+    }
+}
+```
+
+## 荷兰拍卖
+
+荷兰拍卖 NFT  
+**拍卖规则**
+
+1. NFT 出售者部署合约，并设置起始价格
+2. 拍卖持续 7 天
+3. NFT 的价格随时间递减
+4. 参与者可以以存入高于当前价格的 ETH 来买入 NFT
+5. 当有人买入这个 NFT 后拍卖结束
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
+
+interface IERC721 {
+    function transferFrom(address _from, address _to, uint _nftId) external;
+}
+
+contract DutchAuction {
+    uint private constant DURATION = 7 days;
+
+    IERC721 public immutable nft;
+    uint public immutable nftId;
+
+    address payable public immutable seller;
+    uint public immutable startingPrice;
+    uint public immutable startAt;
+    uint public immutable expiresAt;
+    uint public immutable discountRate;
+
+    constructor(uint _startingPrice, uint _discountRate, address _nft, uint _nftId) {
+        seller = payable(msg.sender);
+        startingPrice = _startingPrice;
+        startAt = block.timestamp;
+        expiresAt = block.timestamp + DURATION;
+        discountRate = _discountRate;
+
+        require(_startingPrice >= _discountRate * DURATION, "starting price < min");
+
+        nft = IERC721(_nft);
+        nftId = _nftId;
+    }
+
+    function getPrice() public view returns (uint) {
+        uint timeElapsed = block.timestamp - startAt;
+        uint discount = discountRate * timeElapsed;
+        return startingPrice - discount;
+    }
+
+    function buy() external payable {
+        require(block.timestamp < expiresAt, "auction expired");
+
+        uint price = getPrice();
+        require(msg.value >= price, "ETH < price");
+
+        nft.transferFrom(seller, msg.sender, nftId);
+        uint refund = msg.value - price;
+        if (refund > 0) {
+            payable(msg.sender).transfer(refund);
+        }
+        selfdestruct(seller);
+    }
+}
+```
