@@ -1387,9 +1387,11 @@ contract Payable {
 
 - transfer (2300gas, 发送失败抛出错误)
 - send (2300gas, 返回 bool)
-- call (发送所有的 gas 或设置的 gas，返回 bool)  
-  **如何接收 Ether**  
-  一个要接收 Ether 的合约，至少要有一个以下函数：
+- call (发送所有的 gas 或设置的 gas，返回 bool)
+
+**如何接收 Ether**  
+ 一个要接收 Ether 的合约，至少要有一个以下函数：
+
 - receive() external payable
 - fallback() external payable  
   当 msg.data 为空时，调用 receive()，否则调用 fallback()  
@@ -1440,7 +1442,7 @@ contract SendEther {
 
     function sendViaSend(address payable _to) public payable {
         // send 返回bool表示转账成功和失败
-        // 这个韩式也已经不再推荐使用
+        // 这个函数也已经不再推荐使用
         bool sent = _to.send(msg.value);
         require(sent, "Fail to send");
     }
@@ -1680,6 +1682,591 @@ contract Caller {
 
     function setXAndEther(Callee callee, uint _x) public payable{
         (uint x, uint v) = callee.setXAndEther{value:msg.value}(_x);
+    }
+}
+```
+
+## 创建其他合约的合约
+
+合约可以在其他合约中使用 new 关键字创建  
+从 0.8.0 开始，new 关键字可以通过制定 salt 来支持 create2 特性
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+contract Car {
+    address public owner;
+    string public model;
+    address public carAddress;
+
+    constructor(address _owner, string memory _model) payable {
+        owner = _owner;
+        model = _model;
+        carAddress = address(this);
+    }
+}
+
+contract CarFactory {
+    Car[] public cars;
+
+    function create(address _owner, string memory _model) public {
+        Car car = new Car(_owner, _model);
+        cars.push(car);
+    }
+
+    function createAndSendEther(address _owner, string memory _model) public payable {
+        Car car = (new Car){value: msg.value}(_owner, _model);
+        cars.push(car);
+    }
+
+    // create2就是可以通过设置盐值，在部署合约之前，创建合约的时候就可以预知合约地址
+    function create2(address _owner, string memory _model, bytes32 _salt) public {
+        Car car = (new Car){salt: _salt}(_owner, _model);
+        cars.push(car);
+    }
+
+    function create2AndSendEther(address _owner, string memory _model, bytes32 _salt) public payable {
+        Car car = (new Car){value: msg.value, salt: _salt}(_owner, _model);
+        cars.push(car);
+    }
+
+    function getCar(uint index) public view returns(address owner, string memory model, address carAddr, uint balance) {
+        Car car = cars[index];
+        return (car.owner(), car.model(), car.carAddress(), address(car).balance );
+    }
+}
+```
+
+## try/catch 异常捕获
+
+try/catch 只能捕获外部调用时抛出的错误，以及创建合约时抛出的错误
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+contract Foo {
+    address public owner;
+
+    constructor(address _owner) {
+        require(_owner != address(0), "invalid address");
+        assert(_owner != 0x0000000000000000000000000000000000000001);
+        owner = _owner;
+    }
+
+    function myFunc(uint x) public pure returns (string memory) {
+        require(x != 0, "require failed");
+        return "my func was called";
+    }
+}
+
+contract Bar {
+    event Log(string message);
+    event LogBytes(bytes data);
+
+    Foo public foo;
+
+    constructor() {
+        foo = new Foo(msg.sender);
+    }
+
+    // try catch用于外部函数调用
+    function tryCatchExternalCall(uint _x) public {
+        try foo.myFunc(_x) returns(string memory result) {
+            // 调用成功
+            emit Log(result);
+        } catch {
+            // 调用失败
+            emit Log("External call failed!");
+        }
+    }
+
+    // try catch 用于创建合约
+    function tryCatchNewContract(address _owner) public {
+        try new Foo(_owner) returns(Foo foo) {
+            emit Log("Foo created");
+        } catch Error(string memory reason){
+            // 创建失败， require返回的字符串
+            emit Log(reason);
+        } catch (bytes memory reason) {
+            // 创建失败，assert返回
+            emit LogBytes(reason);
+        }
+    }
+}
+```
+
+## import 导入
+
+可以在 solidity 中使用 import 导入本地和外部文件  
+**本地导入**  
+文件结构
+
+```
+|--Import.sol
+|--Fool.sol
+```
+
+Foo.sol
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
+
+struct Point {
+    uint x;
+    uint y;
+}
+
+error Unauthorized(address caller);
+
+function add(uint x, uint y) pure returns (uint) {
+    return x + y;
+}
+
+contract Foo {
+    string public name = "Foo";
+}
+```
+
+Import.sol
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+// 从当前路径导入Foo.sol
+import "./Foo.sol";
+
+// 导入本地文件中的部分内容
+import {Unauthorized, add as func, Point} from "./Foo.sol";
+
+contract Import {
+    // 初始化一个Foo
+    Foo public foo = new Foo();
+
+    // 测试Foo
+    function getFooName() public view returns(string memory) {
+        return foo.name();
+    }
+}
+```
+
+**外部导入**  
+可以通过复制 github 中合约的 url 直接导入 github 文件
+
+```solidity
+// https://github.com/owner/repo/blob/branch/path/to/Contract.sol
+import "https://github.com/owner/repo/blob/branch/path/to/Contract.sol";
+
+// https://github.com/OpenZeppelin/openzeppelin-contracts/blob/release-v4.5/contracts/utils/cryptography/ECDSA.sol
+import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/release-v4.5/contracts/utils/cryptography/ECDSA.sol";
+```
+
+## Library
+
+库 library 和合约相似，但是不能声明任何状态变量，不能发送 Ether  
+如果所有的库函数都是内部的，库会内嵌到合约中，否则必须要在合约部署之前部署库并链接到合约
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+library Math {
+    function sqrt(uint x) internal pure returns(uint z) {
+        if (y > 3) {
+            z = y;
+            uint x = y / 2 + 1;
+            while (x < z) {
+                z = x;
+                x = (y / x + x) / 2;
+            }
+        } else if (y != 0) {
+            z = 1;
+        }
+    }
+}
+
+contract TestMath {
+    function testSqrt(uint x) public returns(uint) {
+        return Math.sqrt(x);
+    }
+}
+
+library Array {
+    function remove(uint[] storage arr, uint index) public {
+        require(arr.length > 0, "Can't remove from empty array");
+        arr[index] = arr[arr.length - 1];
+        arr.pop();
+    }
+}
+
+contract TestArray {
+    // 链接库
+    using Array for uint[];
+
+    uint[] public arr;
+
+    function testArrayRemove() public {
+        for (uint i = 0; i < 3; i++) {
+            arr.push(i);
+        }
+
+        arr.remove(1);
+
+        assert(arr.length == 2);
+        assert(arr[0] == 0);
+        assert(arr[1] == 2);
+    }
+}
+```
+
+## ABI Encode
+
+将数据编码称 bytes
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
+
+interface IERC20 {
+    function transfer(address, uint) external;
+}
+
+contract Token {
+    function transfer(address, uint) external {}
+}
+
+contract AbiEncode {
+    function test(address _contract, bytes calldata data) external {
+        (bool ok, ) = _contract.call(data);
+        require(ok, "call failed");
+    }
+
+    function encodeWithSignature(
+        address to,
+        uint amount
+    ) external pure returns (bytes memory) {
+        // 不检查拼写错误 - "transfer(address, uint)"
+        return abi.encodeWithSignature("transfer(address,uint256)", to, amount);
+    }
+
+    function encodeWithSelector(
+        address to,
+        uint amount
+    ) external pure returns (bytes memory) {
+        // 类型不检查 - (IERC20.transfer.selector, true, amount)
+        return abi.encodeWithSelector(IERC20.transfer.selector, to, amount);
+    }
+
+    function encodeCall(address to, uint amount) external pure returns (bytes memory) {
+        // 拼写错误和类型错误都会在编译时检查
+        return abi.encodeCall(IERC20.transfer, (to, amount));
+    }
+}
+```
+
+## ABI Decode
+
+abi.decode 解码 bytes 到原数据
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+contract AbiDecode {
+    struct MyStruct{
+        string name;
+        uint[2] nums;
+    }
+
+    function encode(uint x, address addr, uint[] calldata arr, MyStruct calldata myStruct) public pure returns(bytes memory) {
+        return abi.encode(x, addr, arr, myStruct);
+    }
+
+    function decode(bytes calldata data) public pure returns(uint x, address addr, uint[] calldata arr, MyStruct calldata myStruct) {
+        (x, addr, arr, myStruct) = abi.decode(data, (uint, address, uint[], Mystruct));
+    }
+}
+```
+
+## 使用 Keccak256 哈希
+
+keccak256 计算输入的 Keccak-256 哈希  
+使用场景：
+
+- 创建输入的确定且唯一的 Id
+- 提交-显示主题
+- 紧凑的加密签名（签名哈希，而不是长输入）
+
+```solidity
+// SPDX-License-Identifier:MIT
+
+pragma solidity ^0.8.17;
+
+contract HashFunction{
+    function hash(string memory _text, uint num, address _addr) public pure returns(bytes32) {
+        return keccak256(abi.encodePacked(_text, num, _addr));
+    }
+
+    // 哈希碰撞的例子
+    // 当传入abi.encodePacked()多个动态数据类型值时，有可能会出现哈希碰撞，这种情况下要替换使用abi.encode
+    function collision(string memory _text, string memory _anotherText) public pure returns(bytes32) {
+        // encodePacked(AAA, BBB) -> AAABBB
+        // encodePacked(AA, ABBB) -> AAABBB
+        return keccak256(abi.encodePacked(_text, _anotherText));
+    }
+
+}
+
+contract GuessTheMagicWord {
+    bytes32 public answer =
+        0x60298f78cc0b47170ba79c10aa3851d7648bd96f2f8e46a19dbc777c36fb0c00;
+
+    // Magic word is "Solidity"
+    function guess(string memory _word) public view returns (bool) {
+        return keccak256(abi.encodePacked(_word)) == answer;
+    }
+}
+```
+
+## 验证签名
+
+消息在链下签名，在链上使用智能合约验证签名
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+/* 签名验证
+
+如何签名和验证
+# 签名
+1. 创建要签名的消息
+2. 对消息进行哈希
+3. 对哈希进行签名 (链下要保护好自己的私钥)
+
+# 验证
+1. 对原始消息重建哈希
+2. 从签名和哈希恢复出签名者
+3. 比较恢复出的签名者和声称的签名者
+*/
+contract VerifySignature {
+    /* 1. 要有MetaMask账户
+    ethereum.enable()
+    */
+
+    /* 2. 哈希的消息
+    getMessageHash(
+        0x14723A09ACff6D2A60DcdF7aA4AFf308FDDC160C,
+        123,
+        "coffee and donuts",
+        1
+    )
+
+    hash = "0xcf36ac4f97dc10d91fc2cbb20d718e94a8cbfe0f82eaedc6a4aa38946fb797cd"
+    */
+
+    function getMessageHash(
+        address _to,
+        uint _amount,
+        string memory _message,
+        uint _nonce
+    ) public pure returns (bytes32) {
+        return keccak256(abi.encodePacked(_to, _amount, _message, _nonce));
+    }
+
+    /* 3. 签名消息哈希
+    # 使用浏览器
+    account = "这里写自己钱包账户地址"
+    ethereum.request({ method: "personal_sign", params: [account, hash]}).then(console.log)
+
+    # 使用web3
+    web3.personal.sign(hash, web3.eth.defaultAccount, console.log)
+    */
+    function getEthSignedMessageHash(
+        bytes32 _messageHash
+    ) public pure returns (bytes32) {
+        /*
+        签名使用keccak256对以下格式的消息进行哈希，产生签名:
+        "\x19Ethereum Signed Message\n" + len(msg) + msg
+        */
+        return
+            keccak256(
+                abi.encodePacked("\x19Ethereum Signed Message:\n32", _messageHash)
+            );
+    }
+
+    /* 4. 验证签名
+    signer = 0xB273216C05A8c0D4F0a4Dd0d7Bae1D2EfFE636dd
+    to = 0x14723A09ACff6D2A60DcdF7aA4AFf308FDDC160C
+    amount = 123
+    message = "coffee and donuts"
+    nonce = 1
+    signature =
+        0x993dab3dd91f5c6dc28e17439be475478f5635c92a56e17e82349d3fb2f166196f466c0b4e0c146f285204f0dcb13e5ae67bc33f4b888ec32dfe0a063e8f3f781b
+    */
+    function verify(
+        address _signer,
+        address _to,
+        uint _amount,
+        string memory _message,
+        uint _nonce,
+        bytes memory signature
+    ) public pure returns (bool) {
+        bytes32 messageHash = getMessageHash(_to, _amount, _message, _nonce);
+        bytes32 ethSignedMessageHash = getEthSignedMessageHash(messageHash);
+
+        return recoverSigner(ethSignedMessageHash, signature) == _signer;
+    }
+
+    function recoverSigner(
+        bytes32 _ethSignedMessageHash,
+        bytes memory _signature
+    ) public pure returns (address) {
+        (bytes32 r, bytes32 s, uint8 v) = splitSignature(_signature);
+
+        return ecrecover(_ethSignedMessageHash, v, r, s);
+    }
+
+    function splitSignature(
+        bytes memory sig
+    ) public pure returns (bytes32 r, bytes32 s, uint8 v) {
+        require(sig.length == 65, "invalid signature length");
+
+        assembly {
+            /*
+            前32个字节跳过，存储签名长度
+
+            add(sig, 32) = 指针指向 sig + 32
+            跳过签名的前32字节
+
+            mload(p) 将接下来的32字节内存中的内容加载到内存中
+            */
+
+            // 前缀之后的32bytes
+            r := mload(add(sig, 32))
+            // 上面之后的 32 bytes
+            s := mload(add(sig, 64))
+            // 最后一个字节 (上面之后的32字节的第一个字节)
+            v := byte(0, mload(add(sig, 96)))
+        }
+    }
+}
+```
+
+## Gas 费节省技巧
+
+一些节省 Gas 费的技巧
+
+- 用 calldata 替代 memory
+- 加载状态变量到内存
+- 替换循环中的 i++为++i
+- 缓存数组元素
+- 短路
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
+
+contract GasGolf {
+    // 初始 - 50860 gas
+    // 使用calldata - 49115 gas
+    // 加载状态变量到内存 - 48904 gas
+    // 短路 - 48586 gas
+    // 循环变量++i - 48214 gas
+    // 缓存数组长度 - 48179 gas
+    // 加载数组元素到内存 - 48113 gas
+    // uncheck i 溢出 - 47393 gas
+
+    uint public total;
+
+    // start - 没有gas优化
+    // function sumIfEvenAndLessThan99(uint[] memory nums) external {
+    //     for (uint i = 0; i < nums.length; i += 1) {
+    //         bool isEven = nums[i] % 2 == 0;
+    //         bool isLessThan99 = nums[i] < 99;
+    //         if (isEven && isLessThan99) {
+    //             total += nums[i];
+    //         }
+    //     }
+    // }
+
+    // gas 优化
+    // [1, 2, 3, 4, 5, 100]
+    function sumIfEvenAndLessThan99(uint[] calldata nums) external {
+        uint _total = total;
+        uint len = nums.length;
+
+        for (uint i = 0; i < len; ) {
+            uint num = nums[i];
+            if (num % 2 == 0 && num < 99) {
+                _total += num;
+            }
+            unchecked {
+                ++i;
+            }
+        }
+
+        total = _total;
+    }
+}
+```
+
+## 位运算符
+
+- ｜ 按位或
+- & 按位与
+- ^ 按位异或
+- ～ 按位取反
+- << bits 左移
+- \>\> bits 右移
+
+## unchecked 不检查溢出
+
+在 solidity 0.8.0 之后，变量上下溢出会抛出异常，使用 unchecked 可以忽略溢出检查，不报错  
+unchecked 可以节省 gas 费，见 gas 费节费那一节的例子
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
+
+contract UncheckedMath {
+    function add(uint x, uint y) external pure returns (uint) {
+        // 22291 gas
+        // return x + y;
+
+        // 22103 gas
+        unchecked {
+            return x + y;
+        }
+    }
+
+    function sub(uint x, uint y) external pure returns (uint) {
+        // 22329 gas
+        // return x - y;
+
+        // 22147 gas
+        unchecked {
+            return x - y;
+        }
+    }
+
+    function sumOfCubes(uint x, uint y) external pure returns (uint) {
+        // Wrap complex math logic inside unchecked
+        unchecked {
+            uint x3 = x * x * x;
+            uint y3 = y * y * y;
+
+            return x3 + y3;
+        }
     }
 }
 ```
