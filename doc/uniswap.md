@@ -21,10 +21,12 @@ b = ay/(x+a)
 第一次存入一种类型的 token,就按想存多少存多少，第二次及之后就要按比例存入
 这个比例按照 eth 对应 token 的比例存
 比如 eth x 数量，现在已经有 token y
-xy = k
+y/x = k
 存入的时候要带 eth msg.value
-(x-msg.value)(y+b) = k
-你可以存入的 token 数量: b=msg.value \* y/(x + msg.value)
+(y+b)/(x+msg.value) = k
+y + b = y + y/x\*msg.value
+b = y \* msg.value/x
+你可以存入的 token 数量: b=msg.value \* y/x
 
 取自己存的 token
 LP_token
