@@ -59,7 +59,7 @@ contract B {
 **如果可以尽量使用 external/internal 替换 public**
 
 - external 存放函数入参在 calldata, public 存放函数入参在 memory
-- calldata 比 memory 便宜
+- calldata 比 memory 便宜 calldata 中的参数是只读的，不能修改
 - internal 以入参引用的方式传递，不会复制入参到 memoy
 
 **使用 library**
@@ -74,3 +74,49 @@ contract B {
 - 不用的状态变量使用 delete 回收 storage
 
 **简短 error 信息或使用自定义 error**
+
+- 可以使用 natspec error 自定义 error 并使用///标注错误字符串，这样错误信息字符串不会在链上，节省 gas
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.18;
+
+contract ErrorDemo {
+    // netspec error
+    /// this is netspec error info,this is netspec error info,this is netspec error info,this is netspec error info,this is netspec error info
+    error MyError1();
+
+    /// 这是一个错误！老铁，你的输入参数错啦，必须要大于10的数字才可以通过！
+    error MyError2();
+
+    // 21647 gas
+    function test1(uint256 _x) external pure {
+        if (_x < 10) {
+            revert MyError1();
+        }
+    }
+
+    // 21691 gas
+    function test2(uint256 _x) external pure {
+        if (_x < 10) {
+            revert MyError2();
+        }
+    }
+
+    // 22036 gas
+    function test3(uint256 _x) external pure {
+        require(
+            _x > 10,
+            "this is netspec error info,this is netspec error info,this is netspec error info,this is netspec error info,this is netspec error info"
+        );
+    }
+
+    // 21974 gas
+    function test4(uint256 _x) external pure {
+        require(
+            _x > 10,
+            unicode"这是一个错误！老铁，你的输入参数错啦，必须要大于10的数字才可以通过！"
+        );
+    }
+}
+```

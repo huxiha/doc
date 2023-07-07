@@ -154,7 +154,8 @@ contract Constants {
 ## Immutable
 
 关键字 immutable
-这种类型的变量，只能在构造函数中赋值，有值后不能在构造函数之外被修改
+这种类型的变量，只能在构造函数中赋值，有值后不能在构造函数之外被修改  
+不能用在引用类型上（string 和 bytes）
 
 ```solidity
 // SPDX-License-Identifier: MIT
